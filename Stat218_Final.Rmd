@@ -1,6 +1,6 @@
 ---
 title: "Identifying Fake News Through Text Analysis"
-author: "Vee Syengo, Hodo Abubakar, Cosette Henrickse"
+authors: "Vee Syengo, Hodo Abubakar, Cosette Henrickse"
 date: "2025-05-15"
 output: html_document
 ---
