@@ -1,4 +1,4 @@
-# Fake News Detection with Machine Learning
+# Fake News Detection 
 
 This project uses machine learning models to classify news articles as *real* or *fake* based on text structure and content features.
 
