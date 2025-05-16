@@ -1,0 +1,408 @@
+---
+title: "Identifying Fake News Through Text Analysis"
+author: "Vee Syengo, Hodo Abubakar, Cosette Henrickse"
+date: "2025-05-15"
+output: html_document
+---
+**Introduction**
+With the rapid spread of misinformation online, being able to automatically detect fake news is more important than ever. Fake news can distort public opinion, fuel division, and undermine trust in institutions. This project uses two machine learning allgorithms (Random Forest and Support Vector Machines) to analyze patterns in news articles such as writing style, word usage, and structure to classify them as real or fake. The goal is to support efforts to combat disinformation by building models that can reliably flag misleading content.
+
+
+```{r Load libraries}
+library(tidyverse)
+library(dplyr)
+library(tidytext)
+library(SnowballC)
+library(tm)
+library(tidytext)
+library(e1071)
+```
+
+
+```{r load data}
+data <- read.csv2("news_data.csv", stringsAsFactors = FALSE)
+colnames(data) <- c("id", "title", "text", "label")
+```
+
+
+```{r explore distribution of labels across the data}
+data |>
+  ggplot(aes(x = label))+
+  geom_bar()
+# While the data is fairly distributed, it is skewed towards real news (label = 1)
+```
+
+```{r Data Preprocessing}
+# Load stop words
+stop_words
+
+# Pre process text by converting everything to lower case and removing punctuation
+data$text <- tolower(data$text)
+data$text <- gsub("[[:punct:]]", "", data$text)
+
+
+# Remove stop words from the data
+dfm_data <- data |>
+  unnest_tokens(input = "text",
+                output = "Word") |>
+  filter(!(Word %in% stop_words$word))|>
+  mutate(Word = wordStem(Word)) |>
+  count(id, label, Word)
+```
+
+
+```{r Data preparation for DFM}
+#Calculate mean frequency of all words
+mean_freq <- dfm_data |>
+  group_by(Word) |>
+  summarise(total = sum(n)) |>
+  summarise(mean_freq = mean(total)) |>
+  pull(mean_freq)
+
+#Filter out words that occur less than the average
+dfm_data_filtered <- dfm_data |>
+  group_by(Word) |>
+  mutate(total = sum(n)) |>
+  filter(total >= mean_freq) |>
+  select(-total)
+
+# Document feature matrix with words that occur above average 
+dfm_final <- dfm_data_filtered |>
+  filter(!(Word %in% c("id", "label"))) |>
+  pivot_wider(
+    id_cols = c(id),        # Each document identified by its ID and label
+    names_from = Word,             # Each word becomes a column
+    values_from = n,               # Fill with word frequency counts
+    values_fill = 0                # Missing words become 0
+  )
+
+```
+
+
+```{r Exploring informative features}
+# Comparing word frequencies between real and fake news.
+# This shows which words differ most between real and fake news.
+word_summary <- dfm_data_filtered |>
+  group_by(Word, label) |>
+  summarise(freq = sum(n), .groups = "drop") |>
+  tidyr::pivot_wider(names_from = label, values_from = freq, values_fill = 0) |>
+  mutate(diff = abs(`0` - `1`)) |>
+  arrange(desc(diff))
+
+head(word_summary, 20)
+
+
+# Visualize document length
+# Document length
+doc_lengths <- dfm_data_filtered |>
+  group_by(id, label) |>
+  summarise(length = sum(n), vocab_size = n_distinct(Word), .groups = "drop")
+
+# Plot
+library(ggplot2)
+ggplot(doc_lengths, aes(x = length, fill = as.factor(label))) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +
+  labs(title = "Document Length by Class", fill = "Label")
+# Real news (blue) articles tend to be longer:
+# The distribution for label 1 stretches further right — there are more long articles.
+# Suggests real news articles tend to be more detailed, maybe due to journalistic standards.
+# Fake news (red) articles are generally shorter and more frequent:
+# A sharp spike of fake news between 100–300 words.
+# This may reflect fake news being quick-hit, emotional, or low-effort content.
+
+
+#Explore vocabulary richness
+vocab_stats <- dfm_data_filtered |>
+  group_by(id, label) |>
+  summarise(
+    vocab_size = n_distinct(Word),
+    .groups = "drop"
+  )
+
+# Plot vocabulary richness
+ggplot(vocab_stats, aes(x = vocab_size, fill = as.factor(label))) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +
+  labs(
+    title = "Vocabulary Richness by Class",
+    x = "Number of Unique Words",
+    y = "Count",
+    fill = "Label"
+  ) +
+  theme_minimal()
+# The histogram shows that real news articles tend to have a higher vocabulary richness than fake news articles. While fake news clusters tightly around 100–200 unique words, real news exhibits a broader range, including a significant number of articles with over 300 unique terms. This difference could reflect the more diverse, detailed language used in legitimate journalism versus the simpler, more repetitive language found in fabricated stories.
+
+
+
+#Lexical richness, this is the ratio of unique words to total words in each article (vocab_size / length), provides insight into the diversity of language used in true vs. false news articles.
+richness_df <- dfm_data_filtered |>
+  group_by(id, label) |>
+  summarise(
+    length = sum(n),
+    vocab_size = n_distinct(Word),
+    richness = vocab_size / length,
+    .groups = "drop"
+  )
+
+# plot lexical richness
+ggplot(richness_df, aes(x = richness, fill = as.factor(label))) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +
+  labs(
+    title = "Lexical Richness by Class",
+    x = "Vocabulary Richness",
+    y = "Document Count",
+    fill = "Label"
+  ) +
+  theme_minimal()
+#Lexical richness, measured as the number of unique words divided by total words in an article, reveals important distinctions between fake and real news. As shown in the histogram, real news articles (label 1) tend to cluster within a narrower range of richness values (0.65–0.85), reflecting consistent lexical diversity and editorial structure. In contrast, fake news articles (label 0) show greater variance, including outliers with extremely high richness—likely due to short texts with minimal repetition. These findings suggest that real news articles are not only longer but also use a broader and more balanced vocabulary, a distinction that may aid in classification.
+```
+
+```{r Add textual features into the dataset }
+# Aggregate the document-level features into the data
+text_features <- dfm_data_filtered |>
+  group_by(id, label) |>
+  summarise(
+    length_metric = sum(n),
+    vocab_size = n_distinct(Word),
+    richness = vocab_size / length_metric,
+    .groups = "drop"
+  )
+
+# final document feature matrix with relevant features included 
+full_dfm <- left_join(text_features, dfm_final, by = "id")
+
+# Modelling data
+model_data <- full_dfm |>
+  mutate(label = as.factor(label))
+
+```
+
+
+```{r Principal Component Analysis}
+# PCA data that includes the top 20 words with the biggest difference between real and fake news
+pca_features <- model_data %>%
+  select(length_metric, vocab_size, richness, govern, imag, senat,offici, unit, hous, washington, parti, trump, minist, north,	republican,	democrat,	presid,	told, leader,	secur,	china,	hillari)
+
+# Standardize the features 
+pca_scaled <- scale(pca_features)
+
+# perform PCA
+pca_result <- prcomp(pca_scaled, center = TRUE, scale. = TRUE)
+summary(pca_result)
+plot(pca_result, type = "l", main = "Scree Plot")
+
+# From the plot below, 8 seems like a reasonable number of PCA scores to consider because anything beyond that doesn't seem to have a significant change in the variance
+
+```
+
+
+```{r Final modeling data}
+# Add PCA scores into the modelling data
+model_data <-  model_data |>
+  mutate(PC1_score = pca_result$x[,"PC1"],
+         PC2_score = pca_result$x[,"PC2"],
+         PC3_score = pca_result$x[,"PC3"],
+         PC4_score = pca_result$x[,"PC4"],
+         PC5_score = pca_result$x[,"PC5"],
+         PC6_score = pca_result$x[,"PC6"],
+         PC7_score = pca_result$x[,"PC7"],
+         PC8_score = pca_result$x[,"PC8"])
+```
+
+
+
+```{r Split data into train and test}
+set.seed(1)
+train_rows <- sample(1:nrow(model_data), 0.8*nrow(model_data))
+train_data <- model_data[train_rows, ]
+test_data <- model_data[-train_rows, ]
+```
+
+```{r First Random Forest}
+library(caret)
+library(ranger)
+
+# First Random forest model 
+rf_1 <- train( label ~ length_metric + vocab_size + richness +	govern + imag + senat + offici +	unit +	hous + washington	+ parti +	trump + minist,
+  data = train_data,
+  method = "ranger",
+  importance = "impurity"
+)
+
+preds <- predict(rf_1, newdata = test_data)
+confusionMatrix(preds, factor(test_data$label))
+varImp(rf_1)
+
+# We trained a Random Forest classification model to predict whether a news article is real (1) or fake (0) using patterns in the text. The model was built using several features derived from the content, that is:
+# length_metric: how long the article is, vocab_size: how many unique words it contains, richness: how diverse the vocabulary is (vocab size / length)
+# Top 10 words with the most difference between fake and real news
+# These features were used to train the model on known examples (train_data), and then the model was tested on unseen data (test_data) to evaluate its performance.
+
+####Results
+# Overall Accuracy: 83.5%
+# This means the model correctly predicted whether the news was real or fake about 83.5% of the time on new data.
+# 
+# Sensitivity (Fake News Detection): 77.5%
+# The model was able to correctly identify 77.5% of the fake news articles.
+# 
+# Specificity (Real News Detection): 88.6%
+# It also correctly identified 88.6% of the real news articles.
+# 
+# Kappa Score: 0.665
+# This shows strong agreement between the model’s predictions and the true labels, accounting for chance.
+# 
+# Balanced Accuracy: 83.0%
+# This average of sensitivity and specificity shows that the model performs well across both classes, even if they’re not perfectly balanced.
+
+# This model is effective at distinguishing between real and fake news using a combination of text features and keyword frequencies. Its high accuracy and balanced performance across both classes show that the Random Forest approach is suitable for this kind of text classification task.
+#While it's not perfect, it's a strong model that could be improved further with more features or with further hyperparameter tuning.
+```
+
+
+
+
+```{r Second Random Forest}
+#Random forest with PCA scores
+rf_2 <- train( label ~ length_metric + vocab_size + richness +	PC1_score + PC2_score + PC3_score + PC4_score +     PC5_score + PC6_score + PC7_score+ PC8_score,
+  data = train_data,
+  method = "ranger",
+  importance = "impurity"
+)
+
+preds2 <- predict(rf_2, newdata = test_data)
+confusionMatrix(preds2, factor(test_data$label))
+varImp(rf_2)
+
+# Unlike the Previous Random Forest, this Random Forest is build using the same textual features (length_metric, vocab_size, and richness) and the first 8 PCA scores obtained from performing PCA on the top 20 words with the biggest difference in usage between fake and real news. 
+
+# Very little changed about the results. i.e, accuracy increased by 0.001
+# So using PCA scores didn't change the overall performance of this model
+```
+
+
+
+```{r First SVM model}
+# Support Vector Machines (SVMs) are supervised learning models used for binary classification tasks. The core idea behind an SVM is to find the optimal separating hyperplane, a decision boundary that best divides the data points of two classes with the maximum possible margin between them.
+#In our case, the two classes represent whether a news article is fake (label = 0) or real (label = 1). The goal is to use information from the content of each article to train a model that can accurately classify new, unseen articles.
+
+# First SVM model
+svm_model <- svm(label ~ length_metric + vocab_size + richness + govern + imag + senat + offici +	unit +	hous + washington	+ parti +	trump + minist,
+                 data = train_data, 
+                 kernel = "linear")
+
+predictions <- predict(svm_model, test_data)
+confusionMatrix(predictions, factor(test_data$label))
+
+# We trained a linear SVM, which means the model assumes the two classes can be separated using a straight line (or hyperplane in higher dimensions). Here's how it works in steps:
+# Feature extraction: Each article was represented using multiple numerical features:
+# length_metric: Total length of the article, vocab_size: Number of unique words used, richness: Ratio of unique words to total words and word frequencies that differ the most between real and fake news.
+
+# Training: The SVM algorithm finds the hyperplane that best separates the fake and real news articles based on these features. It does this by maximizing the margin, the distance between the hyperplane and the closest data points from either class, called support vectors.
+# 
+# Prediction: Once the model is trained, it uses this hyperplane to classify new articles by checking on which side of the decision boundary they fall.
+
+# Model Perfomance
+# Accuracy	75.7%.	The model correctly predicted 75.7% of test samples.
+# Sensitivity (Recall for fake news)	49.4%. Only 49.4% of fake news articles were correctly identified.
+# Specificity (Recall for real news)	97.9%. Almost all real news articles were correctly identified.
+# Kappa	0.49	Indicates moderate agreement between predictions and true labels.
+
+# The SVM is highly effective at identifying real news (label = 1), with a specificity of nearly 98%. However, it struggles to detect fake news (label = 0), correctly identifying only about 49% of them. This suggests that the model is biased toward the majority class or that the features used do not strongly separate fake from real articles in a linear space.
+
+# This linear SVM model serves as a baseline for binary classification of news articles. While it performs well for detecting real news, improving fake news detection is critical.
+
+```
+
+
+```{r Second SVM model}
+# To address the drawbacks from the linear SVM model above, here we use SVM with a radial kernel, which basically means it looks for patterns in a way that allows for more flexible boundaries between fake and real news. It's like drawing curves instead of straight lines to better separate different types of articles.
+
+svm_model2 <- svm(label ~ length_metric + vocab_size + richness +	PC1_score + PC2_score + PC3_score + PC4_score +     PC5_score + PC6_score + PC7_score+ PC8_score,
+                 data = train_data, 
+                 kernel = "radial",
+                 ranges = list(cost = 10^seq(-2, 5, 1), gamma = 10^seq(-5, 2, 1))
+                 )
+
+predictions2 <- predict(svm_model2, test_data)
+confusionMatrix(predictions2, factor(test_data$label))
+
+# This time, we train the model on similar textual features as before and other more complex combinations of features ("PCA scores") that summarize how the article is written.
+# To enhance the model's performance, we adjusted the following internal settings (hyperparameters):
+### Cost
+# This controls how strictly the model tries to avoid mistakes during training.
+# If the cost is too low, the model may allow too many errors and become too relaxed.
+# If the cost is too high, it may try too hard to avoid errors and end up overfitting (memorizing instead of learning).
+# We tested different cost values — from very low to very high — using 10^-2 to 10^5.
+ 
+### Gamma
+# This helps the model decide how much attention to pay to each training example.
+# A low gamma looks at the big picture (broader patterns).
+# A high gamma focuses more on small details (local patterns).
+# We tested gamma values from 10^-5 to 10^2 to find what works best.
+
+#By trying out many different combinations of these two settings (cost and gamma), the model was able to find the sweet spot, a balance between being flexible enough to capture complex patterns in the data and stable enough to make good predictions on new, unseen articles.
+#This process helped the SVM perform better overall, especially in detecting fake news articles, which can be tricky to identify in our dataset.
+
+# Results
+# Overall, it was right about 84% of the time.
+# Out of all the fake news articles, it correctly identified about 79% of them.
+# Out of all the real news articles, it correctly identified about 88% of them.
+# When it said an article was fake, it was right about 85% of the time.
+# When it said an article was real, it was right about 83% of the time.
+# This means the model is doing well at spotting both real and fake news, and it’s making decisions that are generally balanced and fair across both groups.
+
+# This is a strong model that’s doing a solid job of telling fake from real news. It has improved a lot from the previous version, especially in recognizing fake news, which is often harder for models to catch. By using more complex features and a more flexible decision method, the model became better at finding hidden patterns in the writing style of fake articles.
+
+
+```
+
+
+```{r Comparison between the two models}
+library(tibble)
+
+# Compute confusion matrices
+rf_cm <- confusionMatrix(preds2, factor(test_data$label))
+svm_cm <- confusionMatrix(predictions2, factor(test_data$label))
+
+# Extract relevant performance metrics
+metrics_df <- tibble(
+  Model = rep(c("Random Forest", "SVM (Radial)"), each = 3),
+  Metric = rep(c("Accuracy", "Sensitivity", "Specificity"), 2),
+  Value = c(
+    rf_cm$overall["Accuracy"],
+    rf_cm$byClass["Sensitivity"],
+    rf_cm$byClass["Specificity"],
+    svm_cm$overall["Accuracy"],
+    svm_cm$byClass["Sensitivity"],
+    svm_cm$byClass["Specificity"]
+  )
+)
+
+# Create a bar plot to compare models
+ggplot(metrics_df, aes(x = Metric, y = Value, fill = Model)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7)) +
+  geom_text(aes(label = round(Value, 3)), 
+            position = position_dodge(width = 0.7), 
+            vjust = -0.5, size = 3.5) +
+  labs(title = "Model Performance Comparison",
+       y = "Score",
+       x = "Metric") +
+  theme_minimal() +
+  scale_fill_manual(values = c("steelblue", "darkorange"))
+
+# Both models demonstrate strong and balanced performance in detecting real and fake news. The SVM (Radial) model shows a small advantage in overall accuracy and sensitivity, which may make it more suitable when prioritizing the identification of fake news.
+# However, the Random Forest remains highly competitive, offering slightly better specificity and ease of interpretability through feature importance scores.
+
+```
+
+
+
+**Limitations**
+One key limitation of this project is the reliance on relatively simple, structural features like length and keyword frequency, which may not capture nuanced patterns in deceptive writing. While these features are interpretable, they lack contextual understanding. Additionally, the models were trained on a fixed dataset, which may limit generalizability to newer or more diverse sources of misinformation. Some early models also showed class imbalance issues, struggling to detect fake news consistently. Lastly, the model does not verify facts it only predicts based on how content is written.
+
+
+**Future work**
+Future work can build on this project by incorporating more advanced text representations such as word embeddings (e.g., Word2Vec or BERT), which capture deeper meaning beyond word frequency or article structure. Additionally, expanding the feature set to include sentiment, writing style, or topic modeling could improve detection accuracy. Exploring ensemble techniques or deep learning models may also help capture more complex patterns. 
+
+
+
+
