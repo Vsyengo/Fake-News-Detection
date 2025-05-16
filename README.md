@@ -9,20 +9,20 @@ This project uses machine learning models to classify news articles as *real* or
   - **Random Forest** (using `ranger`)
   - **Support Vector Machine (SVM)** both with linear and radial kernel
 
-## 📊 Results
+## Results
 - Both models achieved over **83% accuracy** and about **70% Kappa** .
 - **SVM** performed slightly better at detecting fake news.
 - **Random Forest** offered better interpretability through variable importance.
 
-## 📁 Files
+## Files
 - `*.Rmd`: Main analysis and model building
 - `news_data.csv`: Datasets used
 - `README.md`: Project summary
 
-## 🧠 Motivation
+## Motivation
 In an age of misinformation, building tools to automatically identify fake news is critical for protecting the public and supporting media literacy.
 
-## ✅ Requirements
+## Requirements
 - R
 - Libraries:
 library(tidyverse)
